@@ -76,13 +76,46 @@ Right click LiveSplit → **Edit Layout…** → **Layout Settings** → the **S
 - **Split audio**: untick this to turn all sounds off.
 - **Cancel delayed sounds that haven't played yet when the timer resets** (on by default): if you reset while a delayed sound is still waiting to play, it won't play.
 - **Stop sounds that are already playing when the timer resets** (off by default): resetting cuts off any sound that's playing.
+- **Test: play a sound when you start the timer** (off by default): see *Can't hear anything?* below.
 
 If you untick a split in the auto splitter settings, it won't split and won't play its sound.
 
 ---
 
-## Something not working?
+## Can't hear anything?
+
+Go through these in order.
+
+### 1. Check that Windows isn't muting LiveSplit
+
+This is the most common cause, especially if LiveSplit's own built-in sound feature was silent too.
+
+1. Open LiveSplit.
+2. Right click the **speaker icon** in the bottom right of your taskbar → **Open volume mixer**.
+3. Find **LiveSplit** in the list of apps:
+   - Make sure it isn't **muted** and its volume isn't at **0**.
+   - Click the little arrow next to it and check its **Output device**. It should be the same headphones/speakers you hear the game on (or *Default*).
+
+LiveSplit only shows up in that list while it's open. If you use something like Voicemeeter or a separate audio interface for streaming, LiveSplit has to be sent to whatever you're listening on.
+
+### 2. Do a test without the game
+
+1. Right click LiveSplit → **Edit Layout…** → **Layout Settings** → **Scriptable Auto Splitter** tab.
+2. Tick **Test: play a sound when you start the timer**. It's under *Split audio*.
+3. Click **OK**, then press your **start** hotkey (or right click LiveSplit → **Start**). The game doesn't need to be open.
+4. You should hear the first sound from your `audio_splits.txt`, or a Windows chime if you haven't set any yet.
+5. Reset the timer, and untick the test option when you're done.
+
+If you hear the test sound, your audio works. Go to step 3 to see what happens during a real split.
+
+### 3. Send the log file
+
+The script writes everything it does to **`split_audio_log.txt`** in the `AudioSplits` folder: every split it sees, whether it found the sound file, and whether the sound actually started playing. Reproduce the problem (do the test, or play until a split that should make a sound), then send that file over. It starts fresh every time LiveSplit opens, so send it before restarting LiveSplit.
+
+---
+
+## Something else not working?
 
 - **No sound:** check that the file name in `audio_splits.txt` matches the real file exactly, including `.mp3` / `.wav`. Windows hides file extensions by default. To see them, turn on *View → Show → File name extensions* in File Explorer.
-- **No popup and no `AudioSplits` folder:** LiveSplit can't save files where it's installed (usually because it's inside `Program Files`). Move the whole LiveSplit folder to your Desktop or Documents and do Step 3 again.
-- **It splits but never makes a sound:** make sure you did Step 2. Otherwise the old auto splitter is running instead of this one.
+- **No popup and no `AudioSplits` folder:** LiveSplit can't save files where it's installed (usually because it's inside `Program Files`). Move the whole LiveSplit folder to your Desktop or Documents and do setup Step 3 again.
+- **It splits but never makes a sound:** make sure you did setup Step 2. Otherwise the old auto splitter is running instead of this one.

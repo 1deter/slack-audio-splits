@@ -123,9 +123,36 @@ startup
     settings.SetToolTip("split_audio", "Play a sound when a split triggers.\nSounds are picked in LiveSplit\\AudioSplits\\audio_splits.txt");
     settings.Add("split_audio_cancel_on_reset", true, "Cancel delayed sounds that haven't played yet when the timer resets", "split_audio");
     settings.Add("split_audio_stop_on_reset", false, "Stop sounds that are already playing when the timer resets", "split_audio");
+    settings.Add("split_audio_test", false, "Test: play a sound when you start the timer (works with the game closed)", "split_audio");
+    settings.SetToolTip("split_audio_test", "Plays the first sound in audio_splits.txt (or a Windows chime if none are set)\nwhenever the timer starts, so you can check you can hear it. Untick it when you're done.");
 
     vars.audio_cancel_on_reset = true;
     vars.audio_stop_on_reset = false;
+    vars.audio_test = false;
+
+    // The timer event handlers below need to read settings even while the game
+    // is closed, when update doesn't run. startup only gets a settings builder,
+    // but it keeps the real settings in a private field. If that ever changes,
+    // the copies update makes into vars are used instead.
+    object asl_settings = null;
+    try
+    {
+        var settings_field = ((object)settings).GetType().GetField("_s", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        if (settings_field != null)
+            asl_settings = settings_field.GetValue(settings);
+    }
+    catch { }
+    Func<string, bool, bool> setting_on = (id, fallback) =>
+    {
+        bool value = fallback;
+        try
+        {
+            if (asl_settings != null)
+                value = ((dynamic)asl_settings).GetSettingValue(id);
+        }
+        catch { }
+        return value;
+    };
 
     Dictionary<string, Dictionary<int, string>> split_names = vars.split_names;
     var map_titles = new Dictionary<string, string>()
@@ -142,13 +169,37 @@ startup
 
     string audio_dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AudioSplits");
     string audio_config = Path.Combine(audio_dir, "audio_splits.txt");
+    string audio_log = Path.Combine(audio_dir, "split_audio_log.txt");
+    try { Directory.CreateDirectory(audio_dir); } catch { }
+
+    // Everything is also written to AudioSplits\split_audio_log.txt so problems
+    // can be figured out without DebugView. It starts over each time the script loads.
+    var log_lock = new object();
+    bool log_fresh = true;
+    Action<string> log = (message) =>
+    {
+        print("[Split audio] " + message);
+        try
+        {
+            lock (log_lock)
+            {
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine;
+                if (log_fresh)
+                    File.WriteAllText(audio_log, line);
+                else
+                    File.AppendAllText(audio_log, line);
+                log_fresh = false;
+            }
+        }
+        catch { }
+    };
+    log("Script loaded. LiveSplit folder: " + AppDomain.CurrentDomain.BaseDirectory + " | settings reader: " + (asl_settings != null ? "ok" : "fallback"));
 
     // First run: write a config listing every split so it just needs filling in.
     if (!File.Exists(audio_config))
     {
         try
         {
-            Directory.CreateDirectory(audio_dir);
             var sb = new StringBuilder();
             sb.AppendLine("# =======================================================================");
             sb.AppendLine("#  BO3 Split Audio");
@@ -184,7 +235,7 @@ startup
                 sb.AppendLine();
             }
             File.WriteAllText(audio_config, sb.ToString());
-            print("[Split audio] Created " + audio_config);
+            log("Created " + audio_config);
 
             var answer = System.Windows.Forms.MessageBox.Show(
                 "Split audio is set up!\n\n" +
@@ -196,7 +247,7 @@ startup
         }
         catch (Exception ex)
         {
-            print("[Split audio] Couldn't create " + audio_config + ": " + ex.Message);
+            log("Couldn't create " + audio_config + ": " + ex.Message);
         }
     }
 
@@ -204,6 +255,7 @@ startup
     // split name -> (full path, delay in seconds, volume 0..1)
     var audio_sounds = new Dictionary<string, Tuple<string, double, double>>(StringComparer.OrdinalIgnoreCase);
     DateTime audio_config_time = DateTime.MinValue;
+    Tuple<string, double, double> audio_first_sound = null;
 
     Func<string, double, double> parse_number = (text, fallback) =>
     {
@@ -221,6 +273,7 @@ startup
             if (stamp != audio_config_time)
             {
                 var sounds = new Dictionary<string, Tuple<string, double, double>>(StringComparer.OrdinalIgnoreCase);
+                Tuple<string, double, double> first = null;
                 if (File.Exists(audio_config))
                 {
                     foreach (string raw in File.ReadAllLines(audio_config))
@@ -244,18 +297,21 @@ startup
                         if (!Path.IsPathRooted(file))
                             file = Path.Combine(audio_dir, file);
                         sounds[name] = Tuple.Create(file, Math.Max(0, delay), Math.Max(0, Math.Min(100, volume)) / 100.0);
+                        if (first == null)
+                            first = sounds[name];
                     }
                 }
 
                 audio_sounds = sounds;
+                audio_first_sound = first;
                 audio_config_time = stamp;
-                print("[Split audio] Loaded " + sounds.Count + " sound(s) from " + audio_config);
+                log("Loaded " + sounds.Count + " sound(s) from " + audio_config + (sounds.Count > 0 ? ": " + string.Join(", ", sounds.Keys) : ""));
             }
         }
         catch (Exception ex)
         {
             // Most likely the file is mid-save; it gets retried on the next split.
-            print("[Split audio] Couldn't read " + audio_config + ": " + ex.Message);
+            log("Couldn't read " + audio_config + ": " + ex.Message);
         }
     };
 
@@ -287,7 +343,7 @@ startup
         Action safe = () =>
         {
             try { work(); }
-            catch (Exception ex) { print("[Split audio] " + ex.Message); }
+            catch (Exception ex) { log("" + ex.Message); }
         };
         if (audio_dispatcher != null)
             audio_begin_invoke.Invoke(audio_dispatcher, new object[] { safe, new object[0] });
@@ -314,7 +370,7 @@ startup
             }
             catch (Exception ex)
             {
-                print("[Split audio] Audio thread stopped: " + ex.Message);
+                log("Audio thread stopped: " + ex.Message);
             }
         });
         thread.Name = "BO3 split audio";
@@ -325,21 +381,33 @@ startup
     }
     catch (Exception ex)
     {
-        print("[Split audio] MediaPlayer unavailable, only .wav files will play: " + ex.Message);
+        log("MediaPlayer unavailable, only .wav files will play: " + ex.Message);
     }
     if (audio_dispatcher == null)
         audio_player_type = null;
+    log(audio_player_type != null ? "Audio engine: MediaPlayer" : "Audio engine: basic .wav player");
 
     // Must run on the audio thread (via audio_post).
     Action<string, double> audio_play = (path, volume) =>
     {
         if (audio_player_type == null)
         {
+            log("Playing " + Path.GetFileName(path) + " with the basic .wav player");
             new System.Media.SoundPlayer(path).Play();
         }
         else
         {
             object player = Activator.CreateInstance(audio_player_type);
+            hook_event(player, "MediaOpened", (Action<object, EventArgs>)((s, e) =>
+            {
+                try
+                {
+                    dynamic opened = player;
+                    string length = opened.NaturalDuration.HasTimeSpan ? opened.NaturalDuration.TimeSpan.TotalSeconds.ToString("0.0") + "s" : "unknown length";
+                    log("Playing " + Path.GetFileName(path) + " (" + length + ", volume " + Math.Round(volume * 100) + "%)");
+                }
+                catch { }
+            }));
             hook_event(player, "MediaEnded", (Action<object, EventArgs>)((s, e) =>
             {
                 try
@@ -354,9 +422,14 @@ startup
                 try
                 {
                     audio_players.Remove(player);
-                    print("[Split audio] Couldn't play " + path + ": " + ((dynamic)e).ErrorException.Message);
+                    log("Couldn't play " + path + ": " + ((dynamic)e).ErrorException.Message);
+                    if (path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
+                    {
+                        log("Trying again with the basic .wav player");
+                        new System.Media.SoundPlayer(path).Play();
+                    }
                 }
-                catch { }
+                catch (Exception ex) { log("Basic .wav player failed too: " + ex.Message); }
             }));
 
             dynamic p = player;
@@ -386,58 +459,115 @@ startup
     };
 
     // Called from the split block with the name of the split that just happened.
-    vars.QueueSplitAudio = (Action<string>)(split_name =>
+    // Never lets an exception out, since that would stop the split itself.
+    vars.QueueSplitAudio = (Action<string, bool>)((split_name, enabled) =>
     {
-        audio_reload();
-        Tuple<string, double, double> sound;
-        if (audio_sounds.TryGetValue(split_name, out sound))
+        try
         {
-            string path = sound.Item1;
-            double delay = sound.Item2;
-            double volume = sound.Item3;
-            if (!File.Exists(path))
+            audio_reload();
+            Tuple<string, double, double> sound;
+            if (!enabled)
             {
-                print("[Split audio] Sound file for \"" + split_name + "\" not found: " + path);
+                log("Split \"" + split_name + "\" happened, but Split audio is turned off in the settings");
             }
-            else if (delay <= 0)
+            else if (!audio_sounds.TryGetValue(split_name, out sound))
             {
-                print("[Split audio] " + split_name + " -> " + Path.GetFileName(path));
-                audio_post(() => audio_play(path, volume));
+                log("Split \"" + split_name + "\" happened, no sound set for it");
             }
             else
             {
-                print("[Split audio] " + split_name + " -> " + Path.GetFileName(path) + " in " + delay + "s");
-                int generation = System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0);
-                System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(delay)).ContinueWith(t =>
+                string path = sound.Item1;
+                double delay = sound.Item2;
+                double volume = sound.Item3;
+                if (!File.Exists(path))
                 {
-                    // A reset since this was queued bumps the generation, which cancels it.
-                    if (System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0) == generation)
-                        audio_post(() => audio_play(path, volume));
-                });
+                    log("Split \"" + split_name + "\" happened, but its sound file wasn't found: " + path);
+                }
+                else if (delay <= 0)
+                {
+                    log("Split \"" + split_name + "\" happened, playing " + Path.GetFileName(path));
+                    audio_post(() => audio_play(path, volume));
+                }
+                else
+                {
+                    log("Split \"" + split_name + "\" happened, playing " + Path.GetFileName(path) + " in " + delay + "s");
+                    int generation = System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0);
+                    System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(delay)).ContinueWith(t =>
+                    {
+                        // A reset since this was queued bumps the generation, which cancels it.
+                        if (System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0) == generation)
+                            audio_post(() => audio_play(path, volume));
+                        else
+                            log("Delayed " + Path.GetFileName(path) + " cancelled by a reset");
+                    });
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            log("Error handling split \"" + split_name + "\": " + ex.Message);
         }
     });
 
+    // Exceptions in these handlers would end up inside LiveSplit's own timer code,
+    // so they're all caught.
     Delegate reset_handler = null;
+    Delegate start_handler = null;
     try
     {
         reset_handler = hook_event(timer, "OnReset", (Action<object, TimerPhase>)((s, phase) =>
         {
-            if (vars.audio_cancel_on_reset)
-                System.Threading.Interlocked.Increment(ref audio_generation);
-            if (vars.audio_stop_on_reset)
-                audio_post(audio_stop_all);
+            try
+            {
+                if (setting_on("split_audio_cancel_on_reset", vars.audio_cancel_on_reset))
+                    System.Threading.Interlocked.Increment(ref audio_generation);
+                if (setting_on("split_audio_stop_on_reset", vars.audio_stop_on_reset))
+                    audio_post(audio_stop_all);
+            }
+            catch (Exception ex) { log("Error on reset: " + ex.Message); }
         }));
     }
     catch (Exception ex)
     {
-        print("[Split audio] Couldn't watch for resets: " + ex.Message);
+        log("Couldn't watch for resets: " + ex.Message);
+    }
+    try
+    {
+        start_handler = hook_event(timer, "OnStart", (Action<object, EventArgs>)((s, e) =>
+        {
+            try
+            {
+                if (setting_on("split_audio_test", vars.audio_test))
+                {
+                    audio_reload();
+                    var sound = audio_first_sound;
+                    string path = sound != null ? sound.Item1 : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Media", "chimes.wav");
+                    double volume = sound != null ? sound.Item3 : 1.0;
+                    if (File.Exists(path))
+                    {
+                        log("Test: timer started, playing " + path);
+                        audio_post(() => audio_play(path, volume));
+                    }
+                    else
+                    {
+                        log("Test: sound file not found: " + path);
+                    }
+                }
+            }
+            catch (Exception ex) { log("Error on timer start: " + ex.Message); }
+        }));
+    }
+    catch (Exception ex)
+    {
+        log("Couldn't watch for timer starts: " + ex.Message);
     }
 
     vars.ShutdownAudio = (Action)(() =>
     {
         if (reset_handler != null)
             timer.GetType().GetEvent("OnReset").RemoveEventHandler(timer, reset_handler);
+        if (start_handler != null)
+            timer.GetType().GetEvent("OnStart").RemoveEventHandler(timer, start_handler);
         if (audio_dispatcher != null)
         {
             audio_post(() =>
@@ -453,9 +583,10 @@ startup
 
 update
 {
-    // The reset handler can't read settings itself, so keep a copy for it.
+    // Backup copies for the timer event handlers in case they can't read settings directly.
     vars.audio_cancel_on_reset = settings["split_audio_cancel_on_reset"];
     vars.audio_stop_on_reset = settings["split_audio_stop_on_reset"];
+    vars.audio_test = settings["split_audio_test"];
 }
 
 start
@@ -476,8 +607,7 @@ split
         return false;
     var current_split_name = split_map[old.split];
     if (settings[current_split_name] && current.split > old.split) {
-        if (settings["split_audio"])
-            vars.QueueSplitAudio(current_split_name);
+        vars.QueueSplitAudio(current_split_name, settings["split_audio"]);
         return true;
     }
     return false;
