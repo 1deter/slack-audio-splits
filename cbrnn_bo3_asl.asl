@@ -115,6 +115,9 @@ startup
     // (plus an optional delay and volume) is set in:
     //     <LiveSplit folder>\AudioSplits\audio_splits.txt
     // That file is created automatically the first time this script loads.
+    //
+    // Note: LiveSplit rewrites every "return;" in a script to "return null;"
+    // before compiling, so the helpers below avoid early returns on purpose.
     // =====================================================================
     settings.Add("split_audio", true, "Split audio");
     settings.SetToolTip("split_audio", "Play a sound when a split triggers.\nSounds are picked in LiveSplit\\AudioSplits\\audio_splits.txt");
@@ -215,39 +218,39 @@ startup
         try
         {
             DateTime stamp = File.GetLastWriteTimeUtc(audio_config);
-            if (stamp == audio_config_time)
-                return;
-
-            var sounds = new Dictionary<string, Tuple<string, double, double>>(StringComparer.OrdinalIgnoreCase);
-            if (File.Exists(audio_config))
+            if (stamp != audio_config_time)
             {
-                foreach (string raw in File.ReadAllLines(audio_config))
+                var sounds = new Dictionary<string, Tuple<string, double, double>>(StringComparer.OrdinalIgnoreCase);
+                if (File.Exists(audio_config))
                 {
-                    string line = raw;
-                    int hash = line.IndexOf('#');
-                    if (hash >= 0)
-                        line = line.Substring(0, hash);
-                    int eq = line.IndexOf('=');
-                    if (eq < 0)
-                        continue;
+                    foreach (string raw in File.ReadAllLines(audio_config))
+                    {
+                        string line = raw;
+                        int hash = line.IndexOf('#');
+                        if (hash >= 0)
+                            line = line.Substring(0, hash);
+                        int eq = line.IndexOf('=');
+                        if (eq < 0)
+                            continue;
 
-                    string name = line.Substring(0, eq).Trim();
-                    string[] parts = line.Substring(eq + 1).Split('|');
-                    string file = parts[0].Trim().Trim('"').Trim();
-                    if (name.Length == 0 || file.Length == 0)
-                        continue;
+                        string name = line.Substring(0, eq).Trim();
+                        string[] parts = line.Substring(eq + 1).Split('|');
+                        string file = parts[0].Trim().Trim('"').Trim();
+                        if (name.Length == 0 || file.Length == 0)
+                            continue;
 
-                    double delay = parts.Length > 1 ? parse_number(parts[1], 0) : 0;
-                    double volume = parts.Length > 2 ? parse_number(parts[2], 100) : 100;
-                    if (!Path.IsPathRooted(file))
-                        file = Path.Combine(audio_dir, file);
-                    sounds[name] = Tuple.Create(file, Math.Max(0, delay), Math.Max(0, Math.Min(100, volume)) / 100.0);
+                        double delay = parts.Length > 1 ? parse_number(parts[1], 0) : 0;
+                        double volume = parts.Length > 2 ? parse_number(parts[2], 100) : 100;
+                        if (!Path.IsPathRooted(file))
+                            file = Path.Combine(audio_dir, file);
+                        sounds[name] = Tuple.Create(file, Math.Max(0, delay), Math.Max(0, Math.Min(100, volume)) / 100.0);
+                    }
                 }
-            }
 
-            audio_sounds = sounds;
-            audio_config_time = stamp;
-            print("[Split audio] Loaded " + sounds.Count + " sound(s) from " + audio_config);
+                audio_sounds = sounds;
+                audio_config_time = stamp;
+                print("[Split audio] Loaded " + sounds.Count + " sound(s) from " + audio_config);
+            }
         }
         catch (Exception ex)
         {
@@ -333,34 +336,35 @@ startup
         if (audio_player_type == null)
         {
             new System.Media.SoundPlayer(path).Play();
-            return;
         }
-
-        object player = Activator.CreateInstance(audio_player_type);
-        hook_event(player, "MediaEnded", (Action<object, EventArgs>)((s, e) =>
+        else
         {
-            try
+            object player = Activator.CreateInstance(audio_player_type);
+            hook_event(player, "MediaEnded", (Action<object, EventArgs>)((s, e) =>
             {
-                audio_players.Remove(player);
-                ((dynamic)player).Close();
-            }
-            catch { }
-        }));
-        hook_event(player, "MediaFailed", (Action<object, EventArgs>)((s, e) =>
-        {
-            try
+                try
+                {
+                    audio_players.Remove(player);
+                    ((dynamic)player).Close();
+                }
+                catch { }
+            }));
+            hook_event(player, "MediaFailed", (Action<object, EventArgs>)((s, e) =>
             {
-                audio_players.Remove(player);
-                print("[Split audio] Couldn't play " + path + ": " + ((dynamic)e).ErrorException.Message);
-            }
-            catch { }
-        }));
+                try
+                {
+                    audio_players.Remove(player);
+                    print("[Split audio] Couldn't play " + path + ": " + ((dynamic)e).ErrorException.Message);
+                }
+                catch { }
+            }));
 
-        dynamic p = player;
-        p.Volume = volume;
-        p.Open(new Uri(path));
-        p.Play();
-        audio_players.Add(player);
+            dynamic p = player;
+            p.Volume = volume;
+            p.Open(new Uri(path));
+            p.Play();
+            audio_players.Add(player);
+        }
     };
 
     // Must run on the audio thread (via audio_post).
@@ -369,14 +373,16 @@ startup
         if (audio_player_type == null)
         {
             new System.Media.SoundPlayer().Stop();
-            return;
         }
-        foreach (dynamic p in audio_players.ToArray())
+        else
         {
-            p.Stop();
-            p.Close();
+            foreach (dynamic p in audio_players.ToArray())
+            {
+                p.Stop();
+                p.Close();
+            }
+            audio_players.Clear();
         }
-        audio_players.Clear();
     };
 
     // Called from the split block with the name of the split that just happened.
@@ -384,32 +390,32 @@ startup
     {
         audio_reload();
         Tuple<string, double, double> sound;
-        if (!audio_sounds.TryGetValue(split_name, out sound))
-            return;
-
-        string path = sound.Item1;
-        double delay = sound.Item2;
-        double volume = sound.Item3;
-        if (!File.Exists(path))
+        if (audio_sounds.TryGetValue(split_name, out sound))
         {
-            print("[Split audio] Sound file for \"" + split_name + "\" not found: " + path);
-            return;
-        }
-
-        print("[Split audio] " + split_name + " -> " + Path.GetFileName(path) + (delay > 0 ? " in " + delay + "s" : ""));
-        if (delay <= 0)
-        {
-            audio_post(() => audio_play(path, volume));
-            return;
-        }
-
-        int generation = System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0);
-        System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(delay)).ContinueWith(t =>
-        {
-            // A reset since this was queued bumps the generation, which cancels it.
-            if (System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0) == generation)
+            string path = sound.Item1;
+            double delay = sound.Item2;
+            double volume = sound.Item3;
+            if (!File.Exists(path))
+            {
+                print("[Split audio] Sound file for \"" + split_name + "\" not found: " + path);
+            }
+            else if (delay <= 0)
+            {
+                print("[Split audio] " + split_name + " -> " + Path.GetFileName(path));
                 audio_post(() => audio_play(path, volume));
-        });
+            }
+            else
+            {
+                print("[Split audio] " + split_name + " -> " + Path.GetFileName(path) + " in " + delay + "s");
+                int generation = System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0);
+                System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(delay)).ContinueWith(t =>
+                {
+                    // A reset since this was queued bumps the generation, which cancels it.
+                    if (System.Threading.Interlocked.CompareExchange(ref audio_generation, 0, 0) == generation)
+                        audio_post(() => audio_play(path, volume));
+                });
+            }
+        }
     });
 
     Delegate reset_handler = null;
