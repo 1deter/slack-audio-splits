@@ -117,5 +117,6 @@ The script writes everything it does to **`split_audio_log.txt`** in the `AudioS
 ## Something else not working?
 
 - **No sound:** check that the file name in `audio_splits.txt` matches the real file exactly, including `.mp3` / `.wav`. Windows hides file extensions by default. To see them, turn on *View → Show → File name extensions* in File Explorer.
+- **Some sounds play but one doesn't:** that file is probably broken, even if it opens fine elsewhere. Re-record it or re-export it (any audio editor or online converter works) and try again. The log file will say something like *"not a valid wave file"* if this is the problem.
 - **No popup and no `AudioSplits` folder:** LiveSplit can't save files where it's installed (usually because it's inside `Program Files`). Move the whole LiveSplit folder to your Desktop or Documents and do setup Step 3 again.
 - **It splits but never makes a sound:** make sure you did setup Step 2. Otherwise the old auto splitter is running instead of this one.
